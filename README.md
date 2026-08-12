@@ -87,6 +87,23 @@ All configuration is via environment variables:
 | `FALLBACK_DNS` | *(unset)* | Comma-separated upstream DNS servers for fallback forwarding (e.g. `1.1.1.1:53,8.8.8.8:53`). You can omit the port for bare IPs (`1.1.1.1,8.8.8.8`). When unset, unknown queries return NXDOMAIN. |
 | `CACHE_TTL` | `300` | Maximum fallback cache duration in seconds. Per-entry TTL is the minimum of this and the record's actual TTL. |
 
+### How It Works
+
+BifrostDNS has two independent data layers:
+
+**Mock store** — records you explicitly create via `bifrost-dns add` or the API. These persist until you delete them or restart the server. They always take priority over everything else.
+
+**Fallback cache** — responses from upstream DNS servers, cached to avoid repeated round-trips. Auto-populated, auto-expiring (TTL-based), flushable on demand.
+
+When a DNS query arrives:
+
+1. **Mock store** → if a matching record exists, return it immediately. Done.
+2. **Fallback cache** → if cached and not expired, return the cached response.
+3. **Upstream DNS** → forward to the first `FALLBACK_DNS` server, cache the response, return it.
+4. **NXDOMAIN** → if all upstreams fail (or fallback is disabled).
+
+> **Note:** The `--ttl` on mock records controls how long *clients* (browsers, `dig`, etc.) should cache the DNS answer. The record itself stays in BifrostDNS until explicitly deleted.
+
 ### DNS Fallback
 
 When `FALLBACK_DNS` is set, BifrostDNS acts as both a mock server **and** a forwarding resolver:
@@ -271,7 +288,8 @@ curl http://localhost:15353/health
 The `bifrost-dns` binary includes a CLI for managing records and cache without `curl`. It connects to a running BifrostDNS server.
 
 ```bash
-# Add a record
+# Add a record (--ttl controls how long clients cache the DNS answer,
+# not how long the record lives in BifrostDNS — records persist until deleted)
 bifrost-dns add test.example.com A 192.168.1.1 --ttl 3600
 bifrost-dns add test.example.com MX "10 mail.example.com."
 bifrost-dns add test.example.com TXT "v=spf1 -all"
@@ -291,8 +309,11 @@ bifrost-dns delete --name test.example.com --type A
 # Check server health
 bifrost-dns health
 
-# Flush the fallback DNS cache
+# Flush the fallback DNS cache (all entries)
 bifrost-dns flush
+
+# Flush cache for a specific domain only
+bifrost-dns flush google.com
 ```
 
 The CLI reads `BIFROST_HOST` (default `127.0.0.1`) and `BIFROST_PORT` (default `15353`) to find the server:
