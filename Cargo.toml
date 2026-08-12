@@ -1,0 +1,27 @@
+[package]
+name = "bifrost-dns"
+version = "0.1.0"
+edition = "2021"
+description = "Mock DNS server for testing — by MinuteMail.co"
+license = "MIT"
+
+[[bin]]
+name = "bifrost-dns"
+path = "src/main.rs"
+
+[dependencies]
+hickory-proto = "0.26"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "signal", "io-util"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = "z"
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
