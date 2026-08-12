@@ -1,9 +1,15 @@
 mod api;
+mod cache;
+mod cli;
 mod config;
 mod dns;
 mod models;
 mod store;
 
+use std::time::Duration;
+
+use api::AppState;
+use cache::SharedCache;
 use config::Config;
 use dns::Fallback;
 use store::SharedStore;
@@ -24,6 +30,21 @@ async fn terminate_signal() {
 
 #[tokio::main]
 async fn main() {
+    // CLI mode: if the first argument is a known subcommand, run the CLI
+    // instead of starting the server.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        let first = args[1].as_str();
+        let subcommands = [
+            "add", "list", "delete", "health", "flush", "--help", "-h", "help",
+        ];
+        if subcommands.contains(&first) {
+            cli::run().await;
+            return;
+        }
+    }
+
+    // Server mode.
     let config = Config::from_env();
 
     tracing_subscriber::fmt()
@@ -44,11 +65,13 @@ async fn main() {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        tracing::info!("Fallback cache TTL: {}s", config.cache_ttl);
     } else {
         tracing::info!("DNS fallback disabled (unknown domains will return NXDOMAIN)");
     }
 
     let store = SharedStore::new();
+    let cache = SharedCache::new(Duration::from_secs(config.cache_ttl));
     let fallback = if config.fallback_enabled() {
         Some(Fallback::new(config.fallback_dns.clone()))
     } else {
@@ -62,8 +85,9 @@ async fn main() {
     let udp_store = store.clone();
     let udp_addr = dns_addr.clone();
     let udp_fallback = fallback.clone();
+    let udp_cache = cache.clone();
     let udp_handle = tokio::spawn(async move {
-        if let Err(e) = dns::run_udp(&udp_addr, udp_store, udp_fallback).await {
+        if let Err(e) = dns::run_udp(&udp_addr, udp_store, udp_fallback, udp_cache).await {
             tracing::error!("UDP DNS server error: {e}");
         }
     });
@@ -71,15 +95,18 @@ async fn main() {
     let tcp_store = store.clone();
     let tcp_addr = dns_addr.clone();
     let tcp_fallback = fallback.clone();
+    let tcp_cache = cache.clone();
     let tcp_handle = tokio::spawn(async move {
-        if let Err(e) = dns::run_tcp(&tcp_addr, tcp_store, tcp_fallback).await {
+        if let Err(e) = dns::run_tcp(&tcp_addr, tcp_store, tcp_fallback, tcp_cache).await {
             tracing::error!("TCP DNS server error: {e}");
         }
     });
 
     // Spawn API server
-    let api_store = store.clone();
-    let app = api::router(api_store);
+    let app = api::router(AppState {
+        store: store.clone(),
+        cache: cache.clone(),
+    });
     let listener = match tokio::net::TcpListener::bind(&api_addr).await {
         Ok(l) => l,
         Err(e) => {

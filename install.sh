@@ -16,7 +16,7 @@ BINARY_NAME="bifrost-dns"
 INSTALL_PREFIX="/usr/local/bin"
 SERVICE_FILE="/etc/systemd/system/bifrost-dns.service"
 DNS_PORT="${DNS_PORT:-53}"
-API_PORT="${API_PORT:-8080}"
+API_PORT="${API_PORT:-15353}"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -373,6 +373,6 @@ else
     echo "    ${INSTALL_PREFIX}/${BINARY_NAME}"
     echo ""
     echo "  Or with custom env:"
-    echo "    DNS_PORT=53 API_PORT=8080 FALLBACK_DNS=1.1.1.1:53 ${INSTALL_PREFIX}/${BINARY_NAME}"
+    echo "    DNS_PORT=53 API_PORT=15353 FALLBACK_DNS=1.1.1.1:53 ${INSTALL_PREFIX}/${BINARY_NAME}"
     echo ""
 fi

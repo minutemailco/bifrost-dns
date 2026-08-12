@@ -13,6 +13,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
+use crate::cache::SharedCache;
 use crate::models::RecordType;
 use crate::store::SharedStore;
 
@@ -173,6 +174,7 @@ async fn handle_query(
     raw: &[u8],
     store: &SharedStore,
     fallback: Option<&Fallback>,
+    cache: &SharedCache,
 ) -> Option<Vec<u8>> {
     let request = Message::from_vec(raw).ok()?;
     let request_id = request.metadata.id;
@@ -234,16 +236,26 @@ async fn handle_query(
         }
     }
 
-    // Step 2: No local match — try fallback if configured.
-    // This handles both supported types (missed local store) and
-    // unsupported types (PTR, SOA, etc.) that we can't serve locally.
+    // Step 2: No local match — try fallback cache first, then upstream.
     if let Some(fb) = fallback {
         if fb.is_enabled() {
+            // Check the fallback cache before hitting upstream.
+            if let Some(cached) = cache.get(&name, hickory_type) {
+                debug!(
+                    "DNS query {} {} -> cache hit [fallback cache]",
+                    name, hickory_type
+                );
+                return patch_response_id(&cached, request_id);
+            }
+
+            // Cache miss — forward to upstream.
             debug!(
                 "DNS query {} {} -> forwarding to upstream [fallback]",
                 name, hickory_type
             );
             if let Some(upstream_resp) = fb.forward(raw).await {
+                // Cache the upstream response for future queries.
+                cache.put(&name, hickory_type, upstream_resp.clone());
                 // Patch the response ID to match the request ID.
                 return patch_response_id(&upstream_resp, request_id);
             }
@@ -287,6 +299,7 @@ pub async fn run_udp(
     addr: &str,
     store: SharedStore,
     fallback: Option<Fallback>,
+    cache: SharedCache,
 ) -> std::io::Result<()> {
     let sock = Arc::new(UdpSocket::bind(addr).await?);
     tracing::info!("UDP DNS server listening on {addr}");
@@ -306,9 +319,10 @@ pub async fn run_udp(
         let sock = sock.clone();
         let store = store.clone();
         let fb = fallback.clone();
+        let cache = cache.clone();
 
         tokio::spawn(async move {
-            if let Some(resp) = handle_query(&data, &store, fb.as_ref()).await {
+            if let Some(resp) = handle_query(&data, &store, fb.as_ref(), &cache).await {
                 // RFC 1035 §4.2.1: UDP responses should be <= 512 bytes.
                 // If exceeded, truncate and set the TC flag so the client
                 // knows to retry over TCP.
@@ -350,6 +364,7 @@ pub async fn run_tcp(
     addr: &str,
     store: SharedStore,
     fallback: Option<Fallback>,
+    cache: SharedCache,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("TCP DNS server listening on {addr}");
@@ -365,9 +380,10 @@ pub async fn run_tcp(
 
         let store = store.clone();
         let fb = fallback.clone();
+        let cache = cache.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_tcp_connection(stream, &store, fb.as_ref()).await {
+            if let Err(e) = handle_tcp_connection(stream, &store, fb.as_ref(), &cache).await {
                 debug!("TCP connection from {peer} ended: {e}");
             }
         });
@@ -379,6 +395,7 @@ async fn handle_tcp_connection(
     mut stream: TcpStream,
     store: &SharedStore,
     fallback: Option<&Fallback>,
+    cache: &SharedCache,
 ) -> std::io::Result<()> {
     // DNS over TCP: 2-byte length prefix (big-endian)
     let len = stream.read_u16().await? as usize;
@@ -386,7 +403,7 @@ async fn handle_tcp_connection(
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).await?;
 
-    if let Some(resp) = handle_query(&buf, store, fallback).await {
+    if let Some(resp) = handle_query(&buf, store, fallback, cache).await {
         let resp_len = resp.len() as u16;
         let mut packet = resp_len.to_be_bytes().to_vec();
         packet.extend_from_slice(&resp);

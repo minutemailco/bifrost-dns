@@ -7,5 +7,5 @@ RUN cargo build --release
 
 FROM scratch
 COPY --from=builder /build/target/release/bifrost-dns /bifrost-dns
-EXPOSE 53/udp 53/tcp 8080/tcp
+EXPOSE 53/udp 53/tcp 15353/tcp
 ENTRYPOINT ["/bifrost-dns"]

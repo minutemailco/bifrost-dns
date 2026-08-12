@@ -2,7 +2,7 @@
 
 ## API Authentication
 
-BifrostDNS does **not** implement API authentication. The HTTP API (default port 8080) allows anyone who can reach it to create, read, and delete DNS records.
+BifrostDNS does **not** implement API authentication. The HTTP API (default port 15353) allows anyone who can reach it to create, read, and delete DNS records.
 
 **When running as a system DNS resolver** (via `install.sh --set-dns` or manual configuration), this means anyone on your network can inject DNS records that will be served by BifrostDNS.
 
@@ -17,12 +17,12 @@ The API port is not exposed by default in the Docker examples. Only expose it if
 docker run -p 53:53/udp -p 53:53 ghcr.io/minutemailco/bifrost-dns:latest
 
 # Less safe: API exposed (only do this on a trusted network)
-docker run -p 53:53/udp -p 53:53 -p 8080:8080 ghcr.io/minutemailco/bifrost-dns:latest
+docker run -p 53:53/udp -p 53:53 -p 15353:15353 ghcr.io/minutemailco/bifrost-dns:latest
 ```
 
 ### Bare metal / systemd
 
-The systemd unit binds the API to `0.0.0.0:8080` by default. To restrict access:
+The systemd unit binds the API to `0.0.0.0:15353` by default. To restrict access:
 
 1. **Bind API to localhost only** — override the unit:
    ```bash
@@ -33,10 +33,10 @@ The systemd unit binds the API to `0.0.0.0:8080` by default. To restrict access:
 2. **Firewall the API port**:
    ```bash
    # ufw (Ubuntu/Debian)
-   sudo ufw deny 8080
+   sudo ufw deny 15353
 
    # iptables
-   sudo iptables -A INPUT -p tcp --dport 8080 -j DROP
+   sudo iptables -A INPUT -p tcp --dport 15353 -j DROP
    ```
 
 ### General
