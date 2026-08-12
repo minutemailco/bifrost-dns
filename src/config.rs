@@ -9,15 +9,18 @@ pub struct Config {
     /// Upstream DNS servers to forward queries when no local record matches.
     /// Empty = disabled (returns NXDOMAIN for unknown names).
     pub fallback_dns: Vec<SocketAddr>,
+    /// Maximum TTL for fallback DNS cache entries (in seconds).
+    pub cache_ttl: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             dns_port: 53,
-            api_port: 8080,
+            api_port: 15353,
             log_level: "info".to_string(),
             fallback_dns: Vec::new(),
+            cache_ttl: 300,
         }
     }
 }
@@ -67,6 +70,12 @@ impl Config {
                     }
                 })
                 .collect();
+        }
+
+        if let Ok(ttl) = env::var("CACHE_TTL") {
+            if let Ok(t) = ttl.parse() {
+                config.cache_ttl = t;
+            }
         }
 
         config
