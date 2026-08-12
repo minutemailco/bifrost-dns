@@ -52,8 +52,11 @@ enum Command {
     },
     /// Check if BifrostDNS is running
     Health,
-    /// Flush the fallback DNS cache
-    Flush,
+    /// Flush the fallback DNS cache (all, or for a specific domain)
+    Flush {
+        /// Domain name to flush (omit to flush everything)
+        name: Option<String>,
+    },
 }
 
 /// Connection config for the CLI.
@@ -317,12 +320,19 @@ pub async fn run() {
                 std::process::exit(1);
             }
         },
-        Command::Flush => {
-            match http_request(&conn.base_url(), "DELETE", "/api/v1/cache", None).await {
+        Command::Flush { name } => {
+            let path = match &name {
+                Some(n) => format!("/api/v1/cache?name={n}"),
+                None => "/api/v1/cache".to_string(),
+            };
+            match http_request(&conn.base_url(), "DELETE", &path, None).await {
                 Ok((200, body)) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                         let count = v["flushed"].as_i64().unwrap_or(0);
-                        println!("Cache flushed ({count} entries removed)");
+                        match &name {
+                            Some(n) => println!("Flushed {count} entries for {n}"),
+                            None => println!("Cache flushed ({count} entries removed)"),
+                        }
                     } else {
                         println!("Cache flushed");
                     }

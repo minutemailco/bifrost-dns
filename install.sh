@@ -258,17 +258,20 @@ check_port() {
     return 0
 }
 
-if ! check_port "$DNS_PORT" udp; then
-    error "UDP port ${DNS_PORT} is already in use. Stop the conflicting service or set DNS_PORT."
+# Only check ports when installing the service (not --no-service, since
+# the running instance may be using them and we're not starting a new one).
+if [[ "$INSTALL_SERVICE" == "true" ]]; then
+    if ! check_port "$DNS_PORT" udp; then
+        error "UDP port ${DNS_PORT} is already in use. Stop the conflicting service or set DNS_PORT."
+    fi
+    if ! check_port "$DNS_PORT" tcp; then
+        error "TCP port ${DNS_PORT} is already in use. Stop the conflicting service or set DNS_PORT."
+    fi
+    if ! check_port "$API_PORT" tcp; then
+        error "TCP port ${API_PORT} is already in use (API server). Stop the conflicting service or set API_PORT."
+    fi
+    info "Ports ${DNS_PORT}/udp, ${DNS_PORT}/tcp, ${API_PORT}/tcp are available."
 fi
-if ! check_port "$DNS_PORT" tcp; then
-    error "TCP port ${DNS_PORT} is already in use. Stop the conflicting service or set DNS_PORT."
-fi
-if ! check_port "$API_PORT" tcp; then
-    error "TCP port ${API_PORT} is already in use (API server). Stop the conflicting service or set API_PORT."
-fi
-
-info "Ports ${DNS_PORT}/udp, ${DNS_PORT}/tcp, ${API_PORT}/tcp are available."
 
 # --- Install binary ---
 info "Installing binary to ${INSTALL_PREFIX}/${BINARY_NAME}"

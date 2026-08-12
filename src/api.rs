@@ -95,8 +95,20 @@ struct FlushResponse {
     flushed: usize,
 }
 
-async fn flush_cache(State(state): State<AppState>) -> Json<FlushResponse> {
-    let count = state.cache.flush();
+#[derive(Debug, Deserialize)]
+struct CacheFilter {
+    name: Option<String>,
+}
+
+async fn flush_cache(
+    State(state): State<AppState>,
+    Query(filter): Query<CacheFilter>,
+) -> Json<FlushResponse> {
+    let count = if let Some(name) = &filter.name {
+        state.cache.flush_domain(name)
+    } else {
+        state.cache.flush()
+    };
     Json(FlushResponse { flushed: count })
 }
 

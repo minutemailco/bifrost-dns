@@ -84,6 +84,26 @@ impl DnsCache {
         count
     }
 
+    /// Flush cached entries for a specific domain name.
+    /// Removes all record types for that name. Returns the count removed.
+    pub fn flush_domain(&mut self, name: &str) -> usize {
+        let target = if name.ends_with('.') {
+            name.to_ascii_lowercase()
+        } else {
+            format!("{}.", name.to_ascii_lowercase())
+        };
+        let to_remove: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|(n, _)| *n == target)
+            .cloned()
+            .collect();
+        for key in &to_remove {
+            self.entries.remove(key);
+        }
+        to_remove.len()
+    }
+
     /// Get cache stats.
     pub fn stats(&self) -> CacheStats {
         let size_bytes: usize = self.entries.values().map(|e| e.response.len()).sum();
@@ -139,6 +159,10 @@ impl SharedCache {
 
     pub fn flush(&self) -> usize {
         self.inner.write().unwrap().flush()
+    }
+
+    pub fn flush_domain(&self, name: &str) -> usize {
+        self.inner.write().unwrap().flush_domain(name)
     }
 
     pub fn stats(&self) -> CacheStats {
