@@ -3,8 +3,10 @@ use axum::http::StatusCode;
 use axum::response::Json;
 use axum::routing::{get, post};
 use axum::Router;
+use prometheus::{Encoder, TextEncoder};
 use serde::Deserialize;
 use std::str::FromStr;
+use std::sync::Once;
 
 use crate::cache::{CacheStats, SharedCache};
 use crate::models::{CreateRecord, HealthResponse, Record, RecordType};
@@ -116,9 +118,30 @@ async fn cache_stats(State(state): State<AppState>) -> Json<CacheStats> {
     Json(state.cache.stats())
 }
 
+/// Register the process collector with the default registry exactly once.
+static PROCESS_COLLECTOR: Once = Once::new();
+
+async fn metrics() -> (StatusCode, String) {
+    PROCESS_COLLECTOR.call_once(|| {
+        let _ = prometheus::register(Box::new(
+            prometheus::process_collector::ProcessCollector::for_self(),
+        ));
+    });
+    let mut buffer = Vec::new();
+    let encoder = TextEncoder::new();
+    encoder
+        .encode(&prometheus::default_registry().gather(), &mut buffer)
+        .expect("failed to encode metrics");
+    (
+        StatusCode::OK,
+        String::from_utf8(buffer).expect("metrics are valid utf-8"),
+    )
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route(
             "/api/v1/records",
             post(create_record).get(list_records).delete(delete_records),
@@ -129,4 +152,19 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/cache", get(cache_stats).delete(flush_cache))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn metrics_returns_process_metrics() {
+        let (status, body) = metrics().await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("process_"),
+            "expected process_* metrics in body"
+        );
+    }
 }
