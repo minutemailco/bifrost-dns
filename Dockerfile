@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM rust:1.85-alpine AS builder
+FROM --platform=$BUILDPLATFORM rust:1.97-alpine AS builder
 RUN apk add --no-cache musl-dev
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
