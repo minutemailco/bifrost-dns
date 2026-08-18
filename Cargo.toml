@@ -19,6 +19,7 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+prometheus = { version = "0.13", features = ["process"] }
 
 [profile.release]
 opt-level = "z"
