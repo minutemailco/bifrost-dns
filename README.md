@@ -1,6 +1,13 @@
 # BifrostDNS — Mock DNS Server by [MinuteMail.co](https://minutemail.co)
 
+[![CI](https://github.com/minutemailco/bifrost-dns/actions/workflows/ci.yml/badge.svg)](https://github.com/minutemailco/bifrost-dns/actions/workflows/ci.yml)
+[![Release](https://github.com/minutemailco/bifrost-dns/actions/workflows/release.yml/badge.svg)](https://github.com/minutemailco/bifrost-dns/actions/workflows/release.yml)
+[![Docker pulls](https://img.shields.io/docker/pulls/ghcr.io/minutemailco/bifrost-dns)](https://github.com/minutemailco/bifrost-dns/pkgs/container/bifrost-dns)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A lightweight mock DNS server for testing. Manage DNS records via a REST API and serve them over UDP + TCP. Built for testing DNS-dependent user flows (domain verification, email routing, etc.) in the [MinuteMail](https://minutemail.co) testing platform.
+
+> **🌐 Built by [MinuteMail.co](https://minutemail.co)** — ephemeral mailboxes, a mock OAuth IdP, and a REST API for testing email and auth flows. If you're mocking DNS to test email delivery, check it out: [minutemail.co](https://minutemail.co)
 
 **Why?** When testing email delivery or domain verification flows, you need to control what DNS records resolve to — without managing real domains. BifrostDNS lets you spin up a DNS server, add records via API, and point your test suite at it.
 
@@ -278,7 +285,7 @@ curl -X DELETE "http://localhost:15353/api/v1/records?name=example.com.&type=A"
 
 ```bash
 curl http://localhost:15353/health
-# {"status":"ok","version":"0.1.0"}
+# {"status":"ok","version":"1.0.0"}
 ```
 
 ---
