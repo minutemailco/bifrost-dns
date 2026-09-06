@@ -21,10 +21,10 @@ enum Command {
     Add {
         /// Domain name (e.g. "example.com.")
         name: String,
-        /// Record type (A, AAAA, CNAME, MX, TXT, NS, SRV)
+        /// Record type (A, AAAA, CNAME, MX, TXT, NS, SRV, HTTPS, SVCB)
         #[clap(rename_all = "UPPERCASE")]
         rtype: String,
-        /// Record data (e.g. "192.168.1.1" or "10 mail.example.com.")
+        /// Record data (e.g. "192.168.1.1", "10 mail.example.com.", "1 . alpn=h2,h3")
         data: String,
         /// TTL in seconds
         #[arg(long, default_value = "3600")]

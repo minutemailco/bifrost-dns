@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use hickory_proto::op::{Message, MessageType, ResponseCode};
 use hickory_proto::rr::{
-    rdata::{self},
+    rdata::{self, svcb},
     Name, RData, Record, RecordType as HickoryRecordType,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -87,6 +87,8 @@ fn to_hickory_type(rtype: RecordType) -> HickoryRecordType {
         RecordType::TXT => HickoryRecordType::TXT,
         RecordType::NS => HickoryRecordType::NS,
         RecordType::SRV => HickoryRecordType::SRV,
+        RecordType::HTTPS => HickoryRecordType::HTTPS,
+        RecordType::SVCB => HickoryRecordType::SVCB,
     }
 }
 
@@ -154,6 +156,140 @@ fn build_rdata(record: &crate::models::Record) -> Result<RData, String> {
                 Name::from_str(parts[3]).map_err(|e| format!("invalid SRV target: {e}"))?;
             Ok(RData::SRV(rdata::SRV::new(priority, weight, port, target)))
         }
+        RecordType::HTTPS => Ok(RData::HTTPS(rdata::HTTPS(parse_svcb(&record.data)?))),
+        RecordType::SVCB => Ok(RData::SVCB(parse_svcb(&record.data)?)),
+    }
+}
+
+/// Parse an RFC 9460 presentation-format RDATA string
+/// ("SvcPriority TargetName SvcParams...") into an SVCB.
+fn parse_svcb(data: &str) -> Result<svcb::SVCB, String> {
+    let tokens: Vec<&str> = data.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return Err("HTTPS/SVCB data must be '<priority> <target> [params...]'".into());
+    }
+
+    let svc_priority: u16 = tokens[0]
+        .parse()
+        .map_err(|e| format!("invalid SvcPriority '{}': {e}", tokens[0]))?;
+    let target_name = Name::from_str(tokens[1]).map_err(|e| format!("invalid target name: {e}"))?;
+
+    let mut svc_params: Vec<(svcb::SvcParamKey, svcb::SvcParamValue)> = Vec::new();
+    for token in &tokens[2..] {
+        let mut key_value = token.splitn(2, '=');
+        let key = key_value.next().unwrap_or_default();
+        let mut value = key_value.next();
+        if let Some(v) = value.as_mut() {
+            if v.len() >= 2 && v.starts_with('"') && v.ends_with('"') {
+                *v = &v[1..v.len() - 1];
+            }
+        }
+
+        let param_key: svcb::SvcParamKey = key
+            .parse()
+            .map_err(|e| format!("invalid SvcParamKey '{key}': {e}"))?;
+        if svc_params.iter().any(|(k, _)| *k == param_key) {
+            return Err(format!(
+                "duplicate SvcParamKey '{key}' (keys MUST NOT be repeated)"
+            ));
+        }
+        let param_value = parse_svc_param(param_key, value)?;
+        svc_params.push((param_key, param_value));
+    }
+
+    if svc_priority == 0 {
+        if !svc_params.is_empty() {
+            return Err("SvcPriority 0 (alias mode) must not include SvcParams".into());
+        }
+        if target_name.is_root() {
+            return Err("SvcPriority 0 (alias mode) must not use root ('.') as TargetName".into());
+        }
+    }
+
+    Ok(svcb::SVCB::new(svc_priority, target_name, svc_params))
+}
+
+/// Parse a single SvcParam value in presentation format, per key.
+fn parse_svc_param(
+    key: svcb::SvcParamKey,
+    value: Option<&str>,
+) -> Result<svcb::SvcParamValue, String> {
+    use svcb::SvcParamKey as K;
+    use svcb::SvcParamValue as V;
+
+    match key {
+        K::Mandatory => {
+            let value = value.ok_or("mandatory requires a comma-separated key list")?;
+            let keys = value
+                .split(',')
+                .map(|k| {
+                    k.parse::<svcb::SvcParamKey>()
+                        .map_err(|e| format!("invalid mandatory key '{k}': {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if keys.is_empty() {
+                return Err("mandatory requires at least one key".into());
+            }
+            Ok(V::Mandatory(svcb::Mandatory(keys)))
+        }
+        K::Alpn => {
+            let value = value.ok_or("alpn requires a comma-separated protocol list")?;
+            let ids = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+            if ids.is_empty() {
+                return Err("alpn requires at least one protocol identifier".into());
+            }
+            Ok(V::Alpn(svcb::Alpn(ids)))
+        }
+        K::NoDefaultAlpn => {
+            if value.is_some_and(|v| !v.is_empty()) {
+                return Err("no-default-alpn must not have a value".into());
+            }
+            Ok(V::NoDefaultAlpn)
+        }
+        K::Port => {
+            let value = value.ok_or("port requires a numeric value")?;
+            let port: u16 = value
+                .parse()
+                .map_err(|e| format!("invalid port '{value}': {e}"))?;
+            Ok(V::Port(port))
+        }
+        K::Ipv4Hint => {
+            let value = value.ok_or("ipv4hint requires a comma-separated address list")?;
+            let ips = value
+                .split(',')
+                .map(|ip| {
+                    ip.parse::<std::net::Ipv4Addr>()
+                        .map(rdata::A)
+                        .map_err(|e| format!("invalid ipv4hint address '{ip}': {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(V::Ipv4Hint(svcb::IpHint(ips)))
+        }
+        K::Ipv6Hint => {
+            let value = value.ok_or("ipv6hint requires a comma-separated address list")?;
+            let ips = value
+                .split(',')
+                .map(|ip| {
+                    ip.parse::<std::net::Ipv6Addr>()
+                        .map(rdata::AAAA)
+                        .map_err(|e| format!("invalid ipv6hint address '{ip}': {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(V::Ipv6Hint(svcb::IpHint(ips)))
+        }
+        K::EchConfigList => {
+            let value = value.ok_or("ech requires a base64-encoded ECHConfigList")?;
+            let bytes = data_encoding::BASE64
+                .decode(value.as_bytes())
+                .map_err(|e| format!("invalid base64 in ech: {e}"))?;
+            Ok(V::EchConfigList(svcb::EchConfigList(bytes)))
+        }
+        K::Key(_) | K::Key65535 | K::Unknown(_) => {
+            // Unknown keys use the raw value bytes as their wire format.
+            Ok(V::Unknown(svcb::Unknown(
+                value.unwrap_or("").as_bytes().to_vec(),
+            )))
+        }
     }
 }
 
@@ -201,6 +337,8 @@ async fn handle_query(
         HickoryRecordType::TXT => Some(RecordType::TXT),
         HickoryRecordType::NS => Some(RecordType::NS),
         HickoryRecordType::SRV => Some(RecordType::SRV),
+        HickoryRecordType::HTTPS => Some(RecordType::HTTPS),
+        HickoryRecordType::SVCB => Some(RecordType::SVCB),
         _ => None,
     };
 
@@ -411,4 +549,191 @@ async fn handle_tcp_connection(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Record;
+    use hickory_proto::rr::rdata::svcb::{
+        Alpn, EchConfigList, IpHint, SvcParamKey, SvcParamValue, SVCB,
+    };
+
+    fn record(rtype: RecordType, data: &str) -> Record {
+        Record {
+            id: "test".into(),
+            name: "example.com.".into(),
+            record_type: rtype,
+            ttl: 300,
+            data: data.into(),
+        }
+    }
+
+    fn https_svcb(data: &str) -> SVCB {
+        match build_rdata(&record(RecordType::HTTPS, data)).expect("rdata should parse") {
+            RData::HTTPS(h) => h.0,
+            other => panic!("expected HTTPS rdata, got {other:?}"),
+        }
+    }
+
+    fn find_param(svcb: &SVCB, key: SvcParamKey) -> &SvcParamValue {
+        svcb.svc_params
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v)
+            .unwrap_or_else(|| panic!("param {key:?} not found"))
+    }
+
+    #[test]
+    fn svcb_parses_priority_and_target() {
+        let svcb = https_svcb("1 svc.example.com. alpn=h2");
+        assert_eq!(svcb.svc_priority, 1);
+        assert_eq!(svcb.target_name.to_string(), "svc.example.com.");
+    }
+
+    #[test]
+    fn svcb_parses_alpn_list() {
+        let svcb = https_svcb("1 . alpn=h2,h3");
+        match find_param(&svcb, SvcParamKey::Alpn) {
+            SvcParamValue::Alpn(Alpn(ids)) => {
+                assert_eq!(ids, &vec!["h2".to_string(), "h3".to_string()])
+            }
+            other => panic!("expected alpn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn svcb_parses_ech_base64() {
+        // "aGVsbG8=" is base64 for b"hello"
+        let svcb = https_svcb("1 . ech=aGVsbG8=");
+        match find_param(&svcb, SvcParamKey::EchConfigList) {
+            SvcParamValue::EchConfigList(EchConfigList(bytes)) => {
+                assert_eq!(bytes, &b"hello".to_vec())
+            }
+            other => panic!("expected ech, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn svcb_parses_port() {
+        let svcb = https_svcb("1 . port=8002");
+        match find_param(&svcb, SvcParamKey::Port) {
+            SvcParamValue::Port(p) => assert_eq!(*p, 8002),
+            other => panic!("expected port, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn svcb_parses_ipv4_and_ipv6_hints() {
+        let svcb = https_svcb("1 . ipv4hint=192.0.2.1,192.0.2.2 ipv6hint=2001:db8::1");
+        match find_param(&svcb, SvcParamKey::Ipv4Hint) {
+            SvcParamValue::Ipv4Hint(IpHint(ips)) => {
+                assert_eq!(ips.len(), 2);
+                assert_eq!(ips[0].0.to_string(), "192.0.2.1");
+                assert_eq!(ips[1].0.to_string(), "192.0.2.2");
+            }
+            other => panic!("expected ipv4hint, got {other:?}"),
+        }
+        match find_param(&svcb, SvcParamKey::Ipv6Hint) {
+            SvcParamValue::Ipv6Hint(IpHint(ips)) => {
+                assert_eq!(ips.len(), 1);
+                assert_eq!(ips[0].0.to_string(), "2001:db8::1");
+            }
+            other => panic!("expected ipv6hint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn svcb_parses_mandatory_and_no_default_alpn() {
+        let svcb = https_svcb("2 . alpn=h2 no-default-alpn mandatory=alpn");
+        match find_param(&svcb, SvcParamKey::Mandatory) {
+            SvcParamValue::Mandatory(keys) => {
+                assert!(matches!(keys.0.as_slice(), [SvcParamKey::Alpn]))
+            }
+            other => panic!("expected mandatory, got {other:?}"),
+        }
+        assert!(matches!(
+            find_param(&svcb, SvcParamKey::NoDefaultAlpn),
+            SvcParamValue::NoDefaultAlpn
+        ));
+    }
+
+    #[test]
+    fn svcb_parses_unknown_key_as_wire_bytes() {
+        let svcb = https_svcb("1 . key65333=ex1");
+        assert!(svcb
+            .svc_params
+            .iter()
+            .any(|(k, v)| matches!(k, SvcParamKey::Key(65333))
+                && matches!(v, SvcParamValue::Unknown(u) if u.0 == b"ex1".to_vec())));
+    }
+
+    #[test]
+    fn svcb_builds_svcb_record_type() {
+        match build_rdata(&record(RecordType::SVCB, "1 . alpn=h2")).expect("should parse") {
+            RData::SVCB(_) => {}
+            other => panic!("expected SVCB rdata, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn svcb_rejects_duplicate_keys() {
+        let err = build_rdata(&record(RecordType::HTTPS, "1 . alpn=h2 alpn=h3"))
+            .expect_err("duplicate keys must be rejected");
+        assert!(err.contains("duplicate"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn svcb_rejects_alias_mode_with_params() {
+        let err = build_rdata(&record(RecordType::HTTPS, "0 foo.example.com. alpn=h2"))
+            .expect_err("alias mode with params must be rejected");
+        assert!(err.contains("alias"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn svcb_rejects_alias_mode_with_root_target() {
+        let err = build_rdata(&record(RecordType::HTTPS, "0 ."))
+            .expect_err("alias mode with root target must be rejected");
+        assert!(err.contains("alias"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn svcb_rejects_bad_priority() {
+        assert!(build_rdata(&record(RecordType::HTTPS, "x . alpn=h2")).is_err());
+    }
+
+    #[test]
+    fn svcb_rejects_bad_base64_ech() {
+        assert!(build_rdata(&record(RecordType::HTTPS, "1 . ech=!!!")).is_err());
+    }
+
+    #[test]
+    fn svcb_wire_round_trip() {
+        let rr = build_record(&record(RecordType::HTTPS, "1 . alpn=h2,h3 ech=aGVsbG8="))
+            .expect("record should build");
+        let mut msg = Message::new(0, MessageType::Response, hickory_proto::op::OpCode::Query);
+        msg.add_answer(rr);
+        let bytes = msg.to_vec().expect("should encode");
+        let decoded = Message::from_vec(&bytes).expect("should decode");
+        match &decoded.answers[0].data {
+            RData::HTTPS(h) => {
+                assert_eq!(h.0.svc_priority, 1);
+                assert!(matches!(
+                    find_param(&h.0, SvcParamKey::Alpn),
+                    SvcParamValue::Alpn(Alpn(ids)) if ids == &vec!["h2".to_string(), "h3".to_string()]
+                ));
+                assert!(matches!(
+                    find_param(&h.0, SvcParamKey::EchConfigList),
+                    SvcParamValue::EchConfigList(EchConfigList(b)) if b == &b"hello".to_vec()
+                ));
+            }
+            other => panic!("expected HTTPS rdata after round trip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn svcb_maps_to_hickory_types() {
+        assert_eq!(to_hickory_type(RecordType::HTTPS), HickoryRecordType::HTTPS);
+        assert_eq!(to_hickory_type(RecordType::SVCB), HickoryRecordType::SVCB);
+    }
 }

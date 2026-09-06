@@ -13,7 +13,7 @@ A lightweight mock DNS server for testing. Manage DNS records via a REST API and
 
 ## Features
 
-- **7 record types**: A, AAAA, CNAME, MX, TXT, NS, SRV
+- **9 record types**: A, AAAA, CNAME, MX, TXT, NS, SRV, HTTPS, SVCB
 - **UDP + TCP** DNS server
 - **REST API** for full CRUD on records
 - **CLI** built into the same binary — manage records without `curl`
@@ -300,6 +300,7 @@ The `bifrost-dns` binary includes a CLI for managing records and cache without `
 bifrost-dns add test.example.com A 192.168.1.1 --ttl 3600
 bifrost-dns add test.example.com MX "10 mail.example.com."
 bifrost-dns add test.example.com TXT "v=spf1 -all"
+bifrost-dns add test.example.com HTTPS "1 . alpn=h2,h3"
 
 # List records (with optional filters)
 bifrost-dns list
@@ -342,6 +343,39 @@ BIFROST_PORT=15353 bifrost-dns list
 | MX     | `<priority> <host>`                   | `10 mail.example.com.`                 |
 | TXT    | Arbitrary text                        | `v=spf1 include:_spf.example.com ~all` |
 | SRV    | `<priority> <weight> <port> <target>` | `10 5 5060 sip.example.com.`           |
+| HTTPS  | [RFC 9460][rfc9460] `SvcPriority TargetName SvcParams` | `1 . alpn=h2,h3`          |
+| SVCB   | [RFC 9460][rfc9460] `SvcPriority TargetName SvcParams` | `2 svc.example.com. alpn=h2 port=8443` |
+
+[rfc9460]: https://datatracker.ietf.org/doc/html/rfc9460
+
+### HTTPS / SVCB Records (RFC 9460)
+
+Useful for testing [ALPN](https://datatracker.ietf.org/doc/html/rfc9460#section-7.1) and [ECH (Encrypted ClientHello)](https://datatracker.ietf.org/doc/html/draft-ietf-tls-svcb-che-01) discovery via DNS. The `data` field uses the RFC 9460 zone-file presentation format: `SvcPriority TargetName SvcParams...`.
+
+All standard SvcParams are supported — `mandatory`, `alpn`, `no-default-alpn`, `port`, `ipv4hint`, `ipv6hint`, `ech` — plus generic unknown keys (`keyNNNNN=...`).
+
+```bash
+# ALPN: advertise HTTP/2 and HTTP/3 on the same name (TargetName "." = this endpoint)
+bifrost-dns add example.com HTTPS "1 . alpn=h2,h3"
+
+# ECH: serve a base64-encoded ECHConfigList
+bifrost-dns add example.com HTTPS '1 . alpn=h3 ech=AENdDwBOACoA...'
+
+# Alternative endpoint with port and address hints
+bifrost-dns add example.com HTTPS "2 svc.example.net. alpn=h3 port=8443 ipv4hint=192.0.2.1 ipv6hint=2001:db8::1"
+
+# SVCB works the same way
+bifrost-dns add _dns.example.com SVCB "1 dns.example.net. alpn=dot"
+
+# Verify with dig
+dig @127.0.0.1 -p 53 example.com HTTPS
+```
+
+Notes:
+
+- SvcPriority `0` (AliasMode) records must point at a real target and cannot carry SvcParams, per [RFC 9460 §2.4.2](https://datatracker.ietf.org/doc/html/rfc9460#section-2.4.2).
+- Duplicate SvcParam keys are rejected.
+- Invalid record data is rejected at query time (the record is stored but skipped when serving, with a warning in the server log) — same as other record types.
 
 ---
 

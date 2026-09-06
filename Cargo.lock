@@ -125,6 +125,7 @@ version = "1.0.0"
 dependencies = [
  "axum",
  "clap",
+ "data-encoding",
  "hickory-proto",
  "prometheus",
  "serde",
